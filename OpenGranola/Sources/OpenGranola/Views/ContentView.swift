@@ -96,7 +96,7 @@ struct ContentView: View {
         .onChange(of: settings.kbFolderPath) {
             indexKBIfNeeded()
         }
-        .onChange(of: settings.voyageApiKey) {
+        .onChange(of: settings.awsAccessKeyId) {
             indexKBIfNeeded()
         }
         .onChange(of: settings.inputDeviceID) {

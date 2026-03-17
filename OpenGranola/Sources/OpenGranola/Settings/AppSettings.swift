@@ -24,12 +24,16 @@ final class AppSettings {
         didSet { UserDefaults.standard.set(Int(inputDeviceID), forKey: "inputDeviceID") }
     }
 
-    var openRouterApiKey: String {
-        didSet { KeychainHelper.save(key: "openRouterApiKey", value: openRouterApiKey) }
+    var awsAccessKeyId: String {
+        didSet { KeychainHelper.save(key: "awsAccessKeyId", value: awsAccessKeyId) }
     }
 
-    var voyageApiKey: String {
-        didSet { KeychainHelper.save(key: "voyageApiKey", value: voyageApiKey) }
+    var awsSecretAccessKey: String {
+        didSet { KeychainHelper.save(key: "awsSecretAccessKey", value: awsSecretAccessKey) }
+    }
+
+    var awsRegion: String {
+        didSet { UserDefaults.standard.set(awsRegion, forKey: "awsRegion") }
     }
 
     /// When true, all app windows are invisible to screen sharing / recording.
@@ -40,14 +44,32 @@ final class AppSettings {
         }
     }
 
+    /// Whether AWS credentials are configured (Keychain or environment).
+    var hasAWSCredentials: Bool {
+        !awsAccessKeyId.isEmpty && !awsSecretAccessKey.isEmpty
+    }
+
     init() {
         let defaults = UserDefaults.standard
+        let env = ProcessInfo.processInfo.environment
+
         self.kbFolderPath = defaults.string(forKey: "kbFolderPath") ?? ""
-        self.selectedModel = defaults.string(forKey: "selectedModel") ?? "anthropic/claude-sonnet-4"
+        self.selectedModel = defaults.string(forKey: "selectedModel") ?? "us.anthropic.claude-sonnet-4-6"
         self.transcriptionLocale = defaults.string(forKey: "transcriptionLocale") ?? "en-US"
         self.inputDeviceID = AudioDeviceID(defaults.integer(forKey: "inputDeviceID"))
-        self.openRouterApiKey = KeychainHelper.load(key: "openRouterApiKey") ?? ""
-        self.voyageApiKey = KeychainHelper.load(key: "voyageApiKey") ?? ""
+
+        // AWS credentials: Keychain first, then environment variables
+        self.awsAccessKeyId = KeychainHelper.load(key: "awsAccessKeyId")
+            ?? env["AWS_ACCESS_KEY_ID"]
+            ?? ""
+        self.awsSecretAccessKey = KeychainHelper.load(key: "awsSecretAccessKey")
+            ?? env["AWS_SECRET_ACCESS_KEY"]
+            ?? ""
+        self.awsRegion = defaults.string(forKey: "awsRegion")
+            ?? env["AWS_REGION"]
+            ?? env["AWS_DEFAULT_REGION"]
+            ?? "us-east-1"
+
         // Default to true (hidden) if key has never been set
         if defaults.object(forKey: "hideFromScreenShare") == nil {
             self.hideFromScreenShare = true
@@ -72,7 +94,6 @@ final class AppSettings {
     var locale: Locale {
         Locale(identifier: transcriptionLocale)
     }
-
 }
 
 // MARK: - Keychain Helper

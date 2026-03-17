@@ -23,16 +23,14 @@ struct SettingsView: View {
                 }
             }
 
-            Section("Voyage AI") {
-                SecureField("API Key", text: $settings.voyageApiKey)
-                .font(.system(size: 12, design: .monospaced))
-            }
-
-            Section("OpenRouter API") {
-                SecureField("API Key", text: $settings.openRouterApiKey)
-                .font(.system(size: 12, design: .monospaced))
-
-                TextField("Model", text: $settings.selectedModel, prompt: Text("e.g. google/gemini-3-flash-preview"))
+            Section("AWS Bedrock") {
+                SecureField("Access Key ID", text: $settings.awsAccessKeyId)
+                    .font(.system(size: 12, design: .monospaced))
+                SecureField("Secret Access Key", text: $settings.awsSecretAccessKey)
+                    .font(.system(size: 12, design: .monospaced))
+                TextField("Region", text: $settings.awsRegion, prompt: Text("us-east-1"))
+                    .font(.system(size: 12, design: .monospaced))
+                TextField("Model", text: $settings.selectedModel, prompt: Text("us.anthropic.claude-sonnet-4-6"))
                     .font(.system(size: 12, design: .monospaced))
             }
 
@@ -58,9 +56,9 @@ struct SettingsView: View {
                     .font(.system(size: 11))
                     .foregroundStyle(.secondary)
             }
-}
+        }
         .formStyle(.grouped)
-        .frame(width: 450, height: 400)
+        .frame(width: 450, height: 420)
         .onAppear {
             inputDevices = MicCapture.availableInputDevices()
         }

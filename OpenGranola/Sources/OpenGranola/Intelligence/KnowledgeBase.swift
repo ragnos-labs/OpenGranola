@@ -15,7 +15,7 @@ private struct KBCache: Codable {
     var entries: [String: [KBChunk]]
 }
 
-/// Embedding-based knowledge base search using Voyage AI.
+/// Embedding-based knowledge base search using Bedrock Titan Embed v2.
 @Observable
 @MainActor
 final class KnowledgeBase {
@@ -25,7 +25,7 @@ final class KnowledgeBase {
     private(set) var indexingProgress: String = ""
 
     private let settings: AppSettings
-    private let voyageClient = VoyageClient()
+    private let embeddingClient = BedrockEmbeddingClient()
 
     private nonisolated static func cacheURL() -> URL {
         let appSupport = FileManager.default.urls(for: .applicationSupportDirectory, in: .userDomainMask).first!
@@ -39,9 +39,8 @@ final class KnowledgeBase {
     }
 
     func index(folderURL: URL) async {
-        let apiKey = settings.voyageApiKey
-        guard !apiKey.isEmpty else {
-            indexingProgress = "No Voyage AI API key"
+        guard settings.hasAWSCredentials else {
+            indexingProgress = "No AWS credentials configured"
             return
         }
 
@@ -85,7 +84,7 @@ final class KnowledgeBase {
 
             indexingProgress = "Embedding \(allTextsToEmbed.count) chunks..."
 
-            let result = await embedInBatches(apiKey: apiKey, texts: allTextsToEmbed)
+            let result = await embedInBatches(texts: allTextsToEmbed)
             let embeddings = result.embeddings
 
             if embeddings == nil, let errMsg = result.error {
@@ -118,10 +117,7 @@ final class KnowledgeBase {
                         return "\(url.lastPathComponent):\(sha256(content))"
                     }
                 )
-                // Also keep keys for files that were cached and reused
-                let allRelevantKeys = Set(filesToEmbed.map(\.key)).union(
-                    currentKeys
-                )
+                let allRelevantKeys = Set(filesToEmbed.map(\.key)).union(currentKeys)
                 cache.entries = cache.entries.filter { allRelevantKeys.contains($0.key) }
 
                 saveCache(cache)
@@ -152,19 +148,19 @@ final class KnowledgeBase {
 
     /// Multi-query search with score fusion. Deduplicates by chunk index, uses max score.
     func search(queries: [String], topK: Int = 5) async -> [KBResult] {
-        let apiKey = settings.voyageApiKey
-        guard isIndexed, !chunks.isEmpty, !apiKey.isEmpty else { return [] }
+        guard isIndexed, !chunks.isEmpty, settings.hasAWSCredentials else { return [] }
 
         let validQueries = queries.filter { !$0.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
         guard !validQueries.isEmpty else { return [] }
 
-        // Embed all queries at once
+        // Embed all queries
         let queryEmbeddings: [[Float]]
         do {
-            queryEmbeddings = try await voyageClient.embed(
-                apiKey: apiKey,
-                texts: validQueries,
-                inputType: "query"
+            queryEmbeddings = try await embeddingClient.embedBatch(
+                accessKeyId: settings.awsAccessKeyId,
+                secretAccessKey: settings.awsSecretAccessKey,
+                region: settings.awsRegion,
+                texts: validQueries
             )
         } catch {
             print("KB search embed error: \(error)")
@@ -184,40 +180,15 @@ final class KnowledgeBase {
 
         var scored = bestScores.map { (index: $0.key, score: $0.value) }
         scored.sort { $0.score > $1.score }
-        let topCandidates = Array(scored.prefix(10))
 
-        guard !topCandidates.isEmpty else { return [] }
-
-        // Rerank with Voyage using the first (primary) query
-        let candidateDocs = topCandidates.map { chunks[$0.index].text }
-        do {
-            let reranked = try await voyageClient.rerank(
-                apiKey: apiKey,
-                query: validQueries[0],
-                documents: candidateDocs,
-                topN: topK
+        return scored.prefix(topK).map { candidate in
+            let chunk = chunks[candidate.index]
+            return KBResult(
+                text: chunk.text,
+                sourceFile: chunk.sourceFile,
+                headerContext: chunk.headerContext,
+                score: Double(candidate.score)
             )
-            return reranked.map { result in
-                let originalIdx = topCandidates[result.index].index
-                let chunk = chunks[originalIdx]
-                return KBResult(
-                    text: chunk.text,
-                    sourceFile: chunk.sourceFile,
-                    headerContext: chunk.headerContext,
-                    score: result.score
-                )
-            }
-        } catch {
-            print("KB rerank error (falling back to cosine): \(error)")
-            return topCandidates.prefix(topK).map { candidate in
-                let chunk = chunks[candidate.index]
-                return KBResult(
-                    text: chunk.text,
-                    sourceFile: chunk.sourceFile,
-                    headerContext: chunk.headerContext,
-                    score: Double(candidate.score)
-                )
-            }
         }
     }
 
@@ -379,8 +350,8 @@ final class KnowledgeBase {
 
     // MARK: - Embedding Batches
 
-    private func embedInBatches(apiKey: String, texts: [String]) async -> (embeddings: [[Float]]?, error: String?) {
-        let batchSize = 32
+    private func embedInBatches(texts: [String]) async -> (embeddings: [[Float]]?, error: String?) {
+        let batchSize = 16
         var allEmbeddings: [[Float]] = []
 
         for batchStart in stride(from: 0, to: texts.count, by: batchSize) {
@@ -389,24 +360,17 @@ final class KnowledgeBase {
 
             indexingProgress = "Embedding \(batchStart + 1)-\(batchEnd) of \(texts.count)..."
 
-            var retried = false
-            while true {
-                do {
-                    let embeddings = try await voyageClient.embed(
-                        apiKey: apiKey,
-                        texts: batch,
-                        inputType: "document"
-                    )
-                    allEmbeddings.append(contentsOf: embeddings)
-                    break
-                } catch {
-                    if !retried {
-                        retried = true
-                        try? await Task.sleep(for: .seconds(1))
-                        continue
-                    }
-                    return (nil, error.localizedDescription)
-                }
+            do {
+                let embeddings = try await embeddingClient.embedBatch(
+                    accessKeyId: settings.awsAccessKeyId,
+                    secretAccessKey: settings.awsSecretAccessKey,
+                    region: settings.awsRegion,
+                    texts: batch,
+                    maxConcurrency: 8
+                )
+                allEmbeddings.append(contentsOf: embeddings)
+            } catch {
+                return (nil, error.localizedDescription)
             }
         }
 

@@ -13,7 +13,7 @@ final class SuggestionEngine {
     /// The latest suggestion decision, even if it didn't surface (for logging).
     private(set) var lastDecision: SuggestionDecision?
 
-    private let client = OpenRouterClient()
+    private let client = BedrockClient()
     private var currentTask: Task<Void, Never>?
     private var lastProcessedUtteranceID: UUID?
     private var lastSuggestionTime: Date?
@@ -50,8 +50,7 @@ final class SuggestionEngine {
         // Cancel any in-flight request
         currentTask?.cancel()
 
-        let apiKey = settings.openRouterApiKey
-        guard !apiKey.isEmpty else { return }
+        guard settings.hasAWSCredentials else { return }
 
         currentTask = Task {
             // Stage 1: Local heuristic pre-filter
@@ -64,10 +63,7 @@ final class SuggestionEngine {
             defer { isGenerating = false }
 
             // Stage 2: Update conversation state if needed
-            await updateConversationStateIfNeeded(
-                latestUtterance: utterance,
-                apiKey: apiKey
-            )
+            await updateConversationStateIfNeeded(latestUtterance: utterance)
             guard !Task.isCancelled else { return }
 
             // Stage 3: Multi-query KB retrieval
@@ -81,8 +77,7 @@ final class SuggestionEngine {
             let decision = await runSurfacingGate(
                 utterance: utterance,
                 trigger: trigger!,
-                kbResults: kbResults,
-                apiKey: apiKey
+                kbResults: kbResults
             )
             lastDecision = decision
             guard !Task.isCancelled else { return }
@@ -95,8 +90,7 @@ final class SuggestionEngine {
                 utterance: utterance,
                 decision: decision,
                 trigger: trigger!,
-                kbResults: kbResults,
-                apiKey: apiKey
+                kbResults: kbResults
             )
             guard !Task.isCancelled else { return }
 
@@ -250,10 +244,7 @@ final class SuggestionEngine {
 
     // MARK: - Stage 2: Conversation State Update
 
-    private func updateConversationStateIfNeeded(
-        latestUtterance: Utterance,
-        apiKey: String
-    ) async {
+    private func updateConversationStateIfNeeded(latestUtterance: Utterance) async {
         guard transcriptStore.needsStateUpdate else { return }
 
         let recentUtterances = transcriptStore.recentExchange
@@ -267,7 +258,9 @@ final class SuggestionEngine {
 
         do {
             let response = try await client.complete(
-                apiKey: apiKey,
+                accessKeyId: settings.awsAccessKeyId,
+                secretAccessKey: settings.awsSecretAccessKey,
+                region: settings.awsRegion,
                 model: settings.selectedModel,
                 messages: statePrompt,
                 maxTokens: 512
@@ -330,8 +323,7 @@ final class SuggestionEngine {
     private func runSurfacingGate(
         utterance: Utterance,
         trigger: SuggestionTrigger,
-        kbResults: [KBResult],
-        apiKey: String
+        kbResults: [KBResult]
     ) async -> SuggestionDecision? {
         let messages = buildGatePrompt(
             utterance: utterance,
@@ -341,7 +333,9 @@ final class SuggestionEngine {
 
         do {
             let response = try await client.complete(
-                apiKey: apiKey,
+                accessKeyId: settings.awsAccessKeyId,
+                secretAccessKey: settings.awsSecretAccessKey,
+                region: settings.awsRegion,
                 model: settings.selectedModel,
                 messages: messages,
                 maxTokens: 512
@@ -371,8 +365,7 @@ final class SuggestionEngine {
         utterance: Utterance,
         decision: SuggestionDecision,
         trigger: SuggestionTrigger,
-        kbResults: [KBResult],
-        apiKey: String
+        kbResults: [KBResult]
     ) async -> Suggestion? {
         let messages = buildGeneratorPrompt(
             utterance: utterance,
@@ -382,7 +375,9 @@ final class SuggestionEngine {
 
         do {
             let response = try await client.complete(
-                apiKey: apiKey,
+                accessKeyId: settings.awsAccessKeyId,
+                secretAccessKey: settings.awsSecretAccessKey,
+                region: settings.awsRegion,
                 model: settings.selectedModel,
                 messages: messages,
                 maxTokens: 300
@@ -403,7 +398,7 @@ final class SuggestionEngine {
 
             // Fallback: use raw text if JSON parsing fails
             let trimmed = response.trimmingCharacters(in: .whitespacesAndNewlines)
-            if !trimmed.isEmpty && trimmed != "—" {
+            if !trimmed.isEmpty {
                 return Suggestion(
                     text: trimmed,
                     kbHits: kbResults,
@@ -430,7 +425,7 @@ final class SuggestionEngine {
         previousState: ConversationState,
         recentUtterances: [Utterance],
         latestUtterance: Utterance
-    ) -> [OpenRouterClient.Message] {
+    ) -> [BedrockClient.Message] {
         let encoder = JSONEncoder()
         encoder.outputFormatting = .sortedKeys
         let prevJSON = (try? String(data: encoder.encode(previousState), encoding: .utf8)) ?? "{}"
@@ -475,7 +470,7 @@ final class SuggestionEngine {
         utterance: Utterance,
         trigger: SuggestionTrigger,
         kbResults: [KBResult]
-    ) -> [OpenRouterClient.Message] {
+    ) -> [BedrockClient.Message] {
         let state = transcriptStore.conversationState
         let recentExchange = transcriptStore.recentExchange
 
@@ -543,7 +538,7 @@ final class SuggestionEngine {
         utterance: Utterance,
         decision: SuggestionDecision,
         kbResults: [KBResult]
-    ) -> [OpenRouterClient.Message] {
+    ) -> [BedrockClient.Message] {
         let state = transcriptStore.conversationState
 
         var evidenceText = ""
