@@ -44,30 +44,29 @@ final class AppSettings {
         }
     }
 
-    /// Whether AWS credentials are configured (Keychain or environment).
+    /// Whether AWS credentials are configured (Infisical or Keychain).
     var hasAWSCredentials: Bool {
         !awsAccessKeyId.isEmpty && !awsSecretAccessKey.isEmpty
     }
 
     init() {
         let defaults = UserDefaults.standard
-        let env = ProcessInfo.processInfo.environment
+        let infisical = InfisicalLoader.load()
 
         self.kbFolderPath = defaults.string(forKey: "kbFolderPath") ?? ""
         self.selectedModel = defaults.string(forKey: "selectedModel") ?? "us.anthropic.claude-sonnet-4-6"
         self.transcriptionLocale = defaults.string(forKey: "transcriptionLocale") ?? "en-US"
         self.inputDeviceID = AudioDeviceID(defaults.integer(forKey: "inputDeviceID"))
 
-        // AWS credentials: Keychain first, then environment variables
+        // AWS credentials: Keychain first, then Infisical env file
         self.awsAccessKeyId = KeychainHelper.load(key: "awsAccessKeyId")
-            ?? env["AWS_ACCESS_KEY_ID"]
+            ?? infisical["AWS_ACCESS_KEY_ID"]
             ?? ""
         self.awsSecretAccessKey = KeychainHelper.load(key: "awsSecretAccessKey")
-            ?? env["AWS_SECRET_ACCESS_KEY"]
+            ?? infisical["AWS_SECRET_ACCESS_KEY"]
             ?? ""
         self.awsRegion = defaults.string(forKey: "awsRegion")
-            ?? env["AWS_REGION"]
-            ?? env["AWS_DEFAULT_REGION"]
+            ?? infisical["AWS_REGION"]
             ?? "us-east-1"
 
         // Default to true (hidden) if key has never been set
@@ -93,6 +92,48 @@ final class AppSettings {
 
     var locale: Locale {
         Locale(identifier: transcriptionLocale)
+    }
+}
+
+// MARK: - Infisical Loader
+
+/// Reads secrets from ~/.infisical/ragnos.env (format: export KEY='value').
+enum InfisicalLoader {
+    private static let envPath = NSHomeDirectory() + "/.infisical/ragnos.env"
+
+    /// Parse the env file and return a dictionary of key-value pairs.
+    static func load() -> [String: String] {
+        guard let contents = try? String(contentsOfFile: envPath, encoding: .utf8) else {
+            return [:]
+        }
+
+        var result: [String: String] = [:]
+        for line in contents.components(separatedBy: .newlines) {
+            let trimmed = line.trimmingCharacters(in: .whitespaces)
+            // Skip comments and empty lines
+            guard !trimmed.isEmpty, !trimmed.hasPrefix("#") else { continue }
+
+            // Strip optional "export " prefix
+            let stripped = trimmed.hasPrefix("export ")
+                ? String(trimmed.dropFirst(7))
+                : trimmed
+
+            // Split on first "="
+            guard let eqIndex = stripped.firstIndex(of: "=") else { continue }
+            let key = String(stripped[stripped.startIndex..<eqIndex])
+                .trimmingCharacters(in: .whitespaces)
+            var value = String(stripped[stripped.index(after: eqIndex)...])
+                .trimmingCharacters(in: .whitespaces)
+
+            // Remove surrounding quotes
+            if (value.hasPrefix("'") && value.hasSuffix("'")) ||
+               (value.hasPrefix("\"") && value.hasSuffix("\"")) {
+                value = String(value.dropFirst().dropLast())
+            }
+
+            result[key] = value
+        }
+        return result
     }
 }
 
